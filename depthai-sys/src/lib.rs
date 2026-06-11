@@ -321,6 +321,20 @@ include_cpp! {
     generate!("dai::dai_buffer_release")
     generate!("dai::dai_buffer_set_data")
 
+    // SpatialDetectionNetwork
+    generate!("dai::dai_spatial_detection_network_build")
+    generate!("dai::dai_spatial_detection_network_set_confidence_threshold")
+    generate!("dai::dai_spatial_detection_network_set_bounding_box_scale_factor")
+    generate!("dai::dai_spatial_detection_network_set_depth_thresholds")
+    generate!("dai::dai_spatial_detection_network_get_output")
+    generate!("dai::dai_spatial_detection_network_class_count")
+    generate!("dai::dai_spatial_detection_network_class_name")
+    generate!("dai::dai_queue_get_spatial_detections")
+    generate!("dai::dai_spatial_detections_release")
+    generate!("dai::dai_spatial_detections_count")
+    generate!("dai::dai_spatial_detections_get")
+    generate!("dai::dai_spatial_detections_label_name")
+
     // Utilities
     generate!("dai::dai_camera_socket_name")
     generate!("dai::dai_string_to_cstring")
@@ -359,6 +373,7 @@ pub type DaiEncodedFrame = *mut autocxx::c_void;
 pub type DaiPointCloud = *mut autocxx::c_void;
 pub type DaiRGBDData = *mut autocxx::c_void;
 pub type DaiMessageGroup = *mut autocxx::c_void;
+pub type DaiSpatialDetections = *mut autocxx::c_void;
 pub type DaiBuffer = *mut autocxx::c_void;
 pub type DaiInputQueue = *mut autocxx::c_void;
 

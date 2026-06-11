@@ -513,6 +513,7 @@ pub mod pipeline;
 pub mod pointcloud;
 pub mod queue;
 pub mod rgbd;
+pub mod spatial_detection_network;
 pub mod stereo_depth;
 pub mod video_encoder;
 
@@ -537,6 +538,7 @@ pub use image_manip::{
 pub use image_align::ImageAlignNode;
 pub use encoded_frame::{EncodedFrame, EncodedFrameProfile, EncodedFrameQueue, EncodedFrameType};
 pub use rgbd::{DepthUnit, RgbdData, RgbdNode};
+pub use spatial_detection_network::{SpatialDetection, SpatialDetectionNetworkNode, SpatialDetections};
 pub use stereo_depth::{PresetMode as StereoPresetMode, StereoDepthNode};
 pub use video_encoder::{VideoEncoderNode, VideoEncoderProfile, VideoEncoderRateControlMode};
 pub use host_node::{HostNode, HostNodeImpl, MessageGroup, Buffer};

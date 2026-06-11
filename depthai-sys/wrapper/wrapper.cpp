@@ -4895,4 +4895,226 @@ int dai_camera_get_image_orientation(DaiCameraNode camera) {
 #endif
 }
 
+// ===== SpatialDetectionNetwork =====
+
+namespace {
+inline std::shared_ptr<dai::node::SpatialDetectionNetwork> as_sdn(DaiNode network) {
+    return std::static_pointer_cast<dai::node::SpatialDetectionNetwork>(static_cast<dai::Node*>(network)->shared_from_this());
+}
+}  // namespace
+
+bool dai_spatial_detection_network_build(DaiNode network, DaiCameraNode camera, DaiNode stereo, const char* model, float fps, int num_shaves) {
+    if(!network || !camera || !stereo || !model) {
+        last_error = "dai_spatial_detection_network_build: null argument";
+        return false;
+    }
+    try {
+        auto sdn = as_sdn(network);
+        auto cam = std::static_pointer_cast<dai::node::Camera>(static_cast<dai::Node*>(camera)->shared_from_this());
+        auto st = std::static_pointer_cast<dai::node::StereoDepth>(static_cast<dai::Node*>(stereo)->shared_from_this());
+        std::optional<float> optFps = (fps > 0.f) ? std::optional<float>(fps) : std::nullopt;
+        sdn->build(cam, st, dai::NNModelDescription{std::string(model)}, optFps);
+        if(num_shaves > 0) {
+            // Re-set the archive with an explicit SHAVE budget; the superblob
+            // default may not fit alongside the rest of the pipeline.
+            dai::NNModelDescription desc{std::string(model)};
+            if(desc.platform.empty() && sdn->getDevice() != nullptr) {
+                desc.platform = sdn->getDevice()->getPlatformAsString();
+            }
+            dai::NNArchive archive(dai::getModelFromZoo(desc, true));
+            sdn->setNNArchive(archive, num_shaves);
+        }
+        return true;
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_spatial_detection_network_build failed: ") + e.what();
+        return false;
+    }
+}
+
+void dai_spatial_detection_network_set_confidence_threshold(DaiNode network, float threshold) {
+    if(!network) {
+        last_error = "dai_spatial_detection_network_set_confidence_threshold: null network";
+        return;
+    }
+    try {
+        as_sdn(network)->setConfidenceThreshold(threshold);
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_spatial_detection_network_set_confidence_threshold failed: ") + e.what();
+    }
+}
+
+void dai_spatial_detection_network_set_bounding_box_scale_factor(DaiNode network, float factor) {
+    if(!network) {
+        last_error = "dai_spatial_detection_network_set_bounding_box_scale_factor: null network";
+        return;
+    }
+    try {
+        as_sdn(network)->setBoundingBoxScaleFactor(factor);
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_spatial_detection_network_set_bounding_box_scale_factor failed: ") + e.what();
+    }
+}
+
+void dai_spatial_detection_network_set_depth_thresholds(DaiNode network, uint32_t lower_mm, uint32_t upper_mm) {
+    if(!network) {
+        last_error = "dai_spatial_detection_network_set_depth_thresholds: null network";
+        return;
+    }
+    try {
+        auto sdn = as_sdn(network);
+        sdn->setDepthLowerThreshold(lower_mm);
+        sdn->setDepthUpperThreshold(upper_mm);
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_spatial_detection_network_set_depth_thresholds failed: ") + e.what();
+    }
+}
+
+DaiOutput dai_spatial_detection_network_get_output(DaiNode network, const char* name) {
+    if(!network || !name) {
+        last_error = "dai_spatial_detection_network_get_output: null argument";
+        return nullptr;
+    }
+    try {
+        auto sdn = as_sdn(network);
+        const std::string n(name);
+        dai::Node::Output* out = nullptr;
+        if(n == "out") {
+            out = &sdn->out;
+        } else if(n == "outNetwork") {
+            out = &sdn->outNetwork;
+        } else if(n == "passthrough") {
+            out = &sdn->passthrough;
+        } else if(n == "passthroughDepth") {
+            out = &sdn->passthroughDepth;
+        }
+        if(!out) {
+            last_error = std::string("dai_spatial_detection_network_get_output: unknown output: ") + n;
+            return nullptr;
+        }
+        return static_cast<DaiOutput>(out);
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_spatial_detection_network_get_output failed: ") + e.what();
+        return nullptr;
+    }
+}
+
+int dai_spatial_detection_network_class_count(DaiNode network) {
+    if(!network) {
+        last_error = "dai_spatial_detection_network_class_count: null network";
+        return -1;
+    }
+    try {
+        auto classes = as_sdn(network)->getClasses();
+        return classes ? static_cast<int>(classes->size()) : -1;
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_spatial_detection_network_class_count failed: ") + e.what();
+        return -1;
+    }
+}
+
+bool dai_spatial_detection_network_class_name(DaiNode network, int index, char* buf, int buf_len) {
+    if(!network || !buf || buf_len <= 0) {
+        last_error = "dai_spatial_detection_network_class_name: null/invalid argument";
+        return false;
+    }
+    try {
+        auto classes = as_sdn(network)->getClasses();
+        if(!classes || index < 0 || index >= static_cast<int>(classes->size())) {
+            last_error = "dai_spatial_detection_network_class_name: index out of range";
+            return false;
+        }
+        std::snprintf(buf, static_cast<size_t>(buf_len), "%s", (*classes)[static_cast<size_t>(index)].c_str());
+        return true;
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_spatial_detection_network_class_name failed: ") + e.what();
+        return false;
+    }
+}
+
+DaiSpatialDetections dai_queue_get_spatial_detections(DaiDataQueue queue, int timeout_ms) {
+    if(!queue) {
+        last_error = "dai_queue_get_spatial_detections: null queue";
+        return nullptr;
+    }
+    try {
+        auto ptr = static_cast<std::shared_ptr<dai::MessageQueue>*>(queue);
+        std::shared_ptr<dai::SpatialImgDetections> dets;
+        if(timeout_ms < 0) {
+            dets = (*ptr)->get<dai::SpatialImgDetections>();
+        } else {
+            bool timedOut = false;
+            dets = (*ptr)->get<dai::SpatialImgDetections>(std::chrono::milliseconds(timeout_ms), timedOut);
+            if(timedOut) return nullptr;
+        }
+        if(!dets) return nullptr;
+        return static_cast<DaiSpatialDetections>(new std::shared_ptr<dai::SpatialImgDetections>(dets));
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_queue_get_spatial_detections failed: ") + e.what();
+        return nullptr;
+    }
+}
+
+void dai_spatial_detections_release(DaiSpatialDetections detections) {
+    if(!detections) return;
+    delete static_cast<std::shared_ptr<dai::SpatialImgDetections>*>(detections);
+}
+
+int dai_spatial_detections_count(DaiSpatialDetections detections) {
+    if(!detections) {
+        last_error = "dai_spatial_detections_count: null detections";
+        return -1;
+    }
+    auto ptr = static_cast<std::shared_ptr<dai::SpatialImgDetections>*>(detections);
+    return static_cast<int>((*ptr)->detections.size());
+}
+
+bool dai_spatial_detections_get(DaiSpatialDetections detections,
+                                int index,
+                                uint32_t* label,
+                                float* confidence,
+                                float* xmin,
+                                float* ymin,
+                                float* xmax,
+                                float* ymax,
+                                float* x_mm,
+                                float* y_mm,
+                                float* z_mm) {
+    if(!detections) {
+        last_error = "dai_spatial_detections_get: null detections";
+        return false;
+    }
+    auto ptr = static_cast<std::shared_ptr<dai::SpatialImgDetections>*>(detections);
+    const auto& dets = (*ptr)->detections;
+    if(index < 0 || index >= static_cast<int>(dets.size())) {
+        last_error = "dai_spatial_detections_get: index out of range";
+        return false;
+    }
+    const auto& d = dets[static_cast<size_t>(index)];
+    if(label) *label = d.label;
+    if(confidence) *confidence = d.confidence;
+    if(xmin) *xmin = d.xmin;
+    if(ymin) *ymin = d.ymin;
+    if(xmax) *xmax = d.xmax;
+    if(ymax) *ymax = d.ymax;
+    if(x_mm) *x_mm = d.spatialCoordinates.x;
+    if(y_mm) *y_mm = d.spatialCoordinates.y;
+    if(z_mm) *z_mm = d.spatialCoordinates.z;
+    return true;
+}
+
+bool dai_spatial_detections_label_name(DaiSpatialDetections detections, int index, char* buf, int buf_len) {
+    if(!detections || !buf || buf_len <= 0) {
+        last_error = "dai_spatial_detections_label_name: null/invalid argument";
+        return false;
+    }
+    auto ptr = static_cast<std::shared_ptr<dai::SpatialImgDetections>*>(detections);
+    const auto& dets = (*ptr)->detections;
+    if(index < 0 || index >= static_cast<int>(dets.size())) {
+        last_error = "dai_spatial_detections_label_name: index out of range";
+        return false;
+    }
+    std::snprintf(buf, static_cast<size_t>(buf_len), "%s", dets[static_cast<size_t>(index)].labelName.c_str());
+    return true;
+}
+
 } // namespace dai

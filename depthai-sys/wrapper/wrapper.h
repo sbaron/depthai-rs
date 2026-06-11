@@ -482,6 +482,53 @@ API DaiOutput dai_camera_request_isp_output(DaiCameraNode camera, float fps);
 API void dai_camera_set_image_orientation(DaiCameraNode camera, int orientation);
 API int dai_camera_get_image_orientation(DaiCameraNode camera);
 
+// SpatialDetectionNetwork (neural inference with 3D localization).
+// Detections handle: `std::shared_ptr<dai::SpatialImgDetections>*`
+typedef void* DaiSpatialDetections;
+
+// Links the camera + stereo depth into the network and loads `model`
+// (a Luxonis HubAI model slug such as "yolov6-nano", downloaded from the
+// model zoo on first use). Pass fps <= 0 to leave it unspecified.
+// num_shaves > 0 recompiles the superblob for that many SHAVE cores
+// (on RVC2 the default of 8 can exceed what is left next to StereoDepth).
+API bool dai_spatial_detection_network_build(DaiNode network,
+                                             DaiCameraNode camera,
+                                             DaiNode stereo,
+                                             const char* model,
+                                             float fps,
+                                             int num_shaves);
+API void dai_spatial_detection_network_set_confidence_threshold(DaiNode network, float threshold);
+API void dai_spatial_detection_network_set_bounding_box_scale_factor(DaiNode network, float factor);
+API void dai_spatial_detection_network_set_depth_thresholds(DaiNode network,
+                                                            uint32_t lower_mm,
+                                                            uint32_t upper_mm);
+// Resolve the node-group's output reference members ("out", "outNetwork",
+// "passthrough", "passthroughDepth"). These alias subnode outputs and are
+// not discoverable through dai_node_get_output.
+API DaiOutput dai_spatial_detection_network_get_output(DaiNode network, const char* name);
+// Class label map of the loaded model. Count is -1 when unavailable.
+API int dai_spatial_detection_network_class_count(DaiNode network);
+API bool dai_spatial_detection_network_class_name(DaiNode network, int index, char* buf, int buf_len);
+
+// Pass timeout_ms < 0 to block indefinitely; returns null on timeout.
+API DaiSpatialDetections dai_queue_get_spatial_detections(DaiDataQueue queue, int timeout_ms);
+API void dai_spatial_detections_release(DaiSpatialDetections detections);
+API int dai_spatial_detections_count(DaiSpatialDetections detections);
+// Bounding box is normalized [0,1]; spatial coordinates are millimeters in
+// the camera frame (x right, y down... per device convention), 0 when unknown.
+API bool dai_spatial_detections_get(DaiSpatialDetections detections,
+                                    int index,
+                                    uint32_t* label,
+                                    float* confidence,
+                                    float* xmin,
+                                    float* ymin,
+                                    float* xmax,
+                                    float* ymax,
+                                    float* x_mm,
+                                    float* y_mm,
+                                    float* z_mm);
+API bool dai_spatial_detections_label_name(DaiSpatialDetections detections, int index, char* buf, int buf_len);
+
 // Error handling
 API const char* dai_get_last_error();
 API void dai_clear_last_error();
