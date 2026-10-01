@@ -19,6 +19,52 @@ pub struct CameraNode {
     node: crate::pipeline::Node,
 }
 
+/// Runtime camera control message, sent to [`CameraNode::inputControl`]
+/// through an input queue with [`crate::queue::InputQueue::send_buffer`] on
+/// [`CameraControl::as_buffer`].
+///
+/// Mirrors C++: `dai::CameraControl` (streaming control only, for now).
+pub struct CameraControl {
+    buffer: crate::host_node::Buffer,
+}
+
+impl CameraControl {
+    fn new() -> Result<Self> {
+        clear_error_flag();
+        let handle = depthai::dai_camera_control_new();
+        if handle.is_null() {
+            Err(last_error("failed to create CameraControl"))
+        } else {
+            Ok(Self { buffer: crate::host_node::Buffer::from_handle(handle) })
+        }
+    }
+
+    fn streaming(streaming: bool) -> Result<Self> {
+        let control = Self::new()?;
+        unsafe { depthai::dai_camera_control_set_streaming(control.buffer.handle(), streaming) };
+        take_error_if_any("failed to set camera streaming").map_or(Ok(control), Err)
+    }
+
+    /// Restart a stopped sensor.
+    pub fn start_streaming() -> Result<Self> {
+        Self::streaming(true)
+    }
+
+    /// Stop the sensor (no frames, less power and heat) until restarted.
+    ///
+    /// Caution: on RVC2 with DepthAI-Core 3.6.1, restarting a stopped sensor
+    /// crashes the device firmware (`RTEMS_FATAL_SOURCE_INVALID_HEAP_FREE` in
+    /// `PlgSrcMipi`, seen on an OAK-D Lite). To pause a stream, close a
+    /// [`crate::GateNode`] after the camera output instead.
+    pub fn stop_streaming() -> Result<Self> {
+        Self::streaming(false)
+    }
+
+    pub fn as_buffer(&self) -> &crate::host_node::Buffer {
+        &self.buffer
+    }
+}
+
 /// Alias for camera output.
 ///
 /// We reuse the common type `crate::output::Output` for consistency (link/queue).
@@ -492,6 +538,26 @@ impl ImageFrame {
 
     pub(crate) fn handle(&self) -> DaiImgFrame {
         self.handle
+    }
+
+    /// New frame holding a copy of `data`, e.g. to feed a device node from
+    /// the host through an [`crate::queue::InputQueue`].
+    pub fn new(width: u32, height: u32, format: ImageFrameType, data: &[u8]) -> Result<Self> {
+        clear_error_flag();
+        let handle = unsafe {
+            depthai::dai_img_frame_new(width, height, c_int(format as i32), data.as_ptr() as *const _, data.len())
+        };
+        if handle.is_null() {
+            Err(last_error("failed to create ImgFrame"))
+        } else {
+            Ok(Self { handle })
+        }
+    }
+
+    /// Sequence number assigned by the device; frames and the messages
+    /// derived from them (NN results, detections) share it.
+    pub fn sequence_num(&self) -> i64 {
+        unsafe { depthai::dai_frame_get_sequence_num(self.handle) }
     }
 
     pub fn width(&self) -> u32 {

@@ -11,6 +11,22 @@ pub struct Device {
     handle: DaiDevice,
 }
 
+/// Chip temperatures in degrees Celsius.
+///
+/// Mirrors C++: `dai::ChipTemperature`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChipTemperature {
+    /// CPU subsystem.
+    pub css: f32,
+    /// Media subsystem.
+    pub mss: f32,
+    /// Shave array.
+    pub upa: f32,
+    /// DRAM subsystem.
+    pub dss: f32,
+    pub average: f32,
+}
+
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DevicePlatform {
@@ -62,6 +78,20 @@ impl Device {
             Err(err)
         } else {
             Ok(())
+        }
+    }
+
+    /// Current chip temperatures (degrees Celsius).
+    pub fn chip_temperature(&self) -> Result<ChipTemperature> {
+        clear_error_flag();
+        let mut t = ChipTemperature { css: 0.0, mss: 0.0, upa: 0.0, dss: 0.0, average: 0.0 };
+        let ok = unsafe {
+            depthai::dai_device_get_chip_temperature(self.handle, &mut t.css, &mut t.mss, &mut t.upa, &mut t.dss, &mut t.average)
+        };
+        if ok {
+            Ok(t)
+        } else {
+            Err(last_error("failed to read chip temperature"))
         }
     }
 

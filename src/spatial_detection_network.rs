@@ -22,6 +22,20 @@ pub struct SpatialDetection {
     pub x_mm: f32,
     pub y_mm: f32,
     pub z_mm: f32,
+    /// Keypoints (e.g. face landmarks), when the model provides them.
+    pub keypoints: Vec<SpatialKeypoint>,
+}
+
+/// A detection keypoint: normalized [0,1] image position plus its 3D
+/// position in millimeters (0 when no depth was available).
+#[derive(Debug, Clone, Copy)]
+pub struct SpatialKeypoint {
+    pub x: f32,
+    pub y: f32,
+    pub confidence: f32,
+    pub x_mm: f32,
+    pub y_mm: f32,
+    pub z_mm: f32,
 }
 
 // No `inputs(..)`/`outputs(..)` on the macro: this node is a C++ node group
@@ -197,6 +211,7 @@ impl SpatialDetections {
             x_mm: 0.0,
             y_mm: 0.0,
             z_mm: 0.0,
+            keypoints: Vec::new(),
         };
         let ok = unsafe {
             depthai::dai_spatial_detections_get(
@@ -229,7 +244,32 @@ impl SpatialDetections {
             let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
             det.label_name = String::from_utf8_lossy(&buf[..len]).into_owned();
         }
+        let count: i32 = unsafe { depthai::dai_spatial_detections_keypoint_count(self.handle, c_int(index as i32)) }.into();
+        for k in 0..count.max(0) {
+            let mut kp = SpatialKeypoint { x: 0.0, y: 0.0, confidence: 0.0, x_mm: 0.0, y_mm: 0.0, z_mm: 0.0 };
+            let ok = unsafe {
+                depthai::dai_spatial_detections_get_keypoint(
+                    self.handle,
+                    c_int(index as i32),
+                    c_int(k),
+                    &mut kp.x,
+                    &mut kp.y,
+                    &mut kp.confidence,
+                    &mut kp.x_mm,
+                    &mut kp.y_mm,
+                    &mut kp.z_mm,
+                )
+            };
+            if ok {
+                det.keypoints.push(kp);
+            }
+        }
         Some(det)
+    }
+
+    /// Sequence number of the frame the detections were computed on.
+    pub fn sequence_num(&self) -> i64 {
+        unsafe { depthai::dai_spatial_detections_get_sequence_num(self.handle) }
     }
 
     pub fn to_vec(&self) -> Vec<SpatialDetection> {

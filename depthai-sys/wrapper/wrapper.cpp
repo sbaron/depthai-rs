@@ -40,6 +40,7 @@
     #define DAI_HAS_NODE_NEURAL_DEPTH 0
     #define DAI_HAS_NODE_GATE 0
 #endif
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <cstdlib>
@@ -1266,6 +1267,10 @@ static std::unordered_map<std::string, NodeCreator>& get_node_registry() {
     #endif
 
         REGISTER_NODE(dai::node::MessageDemux);
+
+    #if DAI_HAS_NODE_GATE
+        REGISTER_NODE(dai::node::Gate);
+    #endif
 
     #if DAI_HAS_NODE_NEURAL_DEPTH
         REGISTER_NODE(dai::node::NeuralDepth);
@@ -5115,6 +5120,584 @@ bool dai_spatial_detections_label_name(DaiSpatialDetections detections, int inde
     }
     std::snprintf(buf, static_cast<size_t>(buf_len), "%s", dets[static_cast<size_t>(index)].labelName.c_str());
     return true;
+}
+
+int dai_spatial_detections_keypoint_count(DaiSpatialDetections detections, int index) {
+    if(!detections) {
+        last_error = "dai_spatial_detections_keypoint_count: null detections";
+        return -1;
+    }
+    auto ptr = static_cast<std::shared_ptr<dai::SpatialImgDetections>*>(detections);
+    const auto& dets = (*ptr)->detections;
+    if(index < 0 || index >= static_cast<int>(dets.size())) {
+        last_error = "dai_spatial_detections_keypoint_count: index out of range";
+        return -1;
+    }
+    return static_cast<int>(dets[static_cast<size_t>(index)].getKeypoints().size());
+}
+
+bool dai_spatial_detections_get_keypoint(DaiSpatialDetections detections,
+                                         int index,
+                                         int keypoint,
+                                         float* x,
+                                         float* y,
+                                         float* confidence,
+                                         float* x_mm,
+                                         float* y_mm,
+                                         float* z_mm) {
+    if(!detections) {
+        last_error = "dai_spatial_detections_get_keypoint: null detections";
+        return false;
+    }
+    auto ptr = static_cast<std::shared_ptr<dai::SpatialImgDetections>*>(detections);
+    const auto& dets = (*ptr)->detections;
+    if(index < 0 || index >= static_cast<int>(dets.size())) {
+        last_error = "dai_spatial_detections_get_keypoint: index out of range";
+        return false;
+    }
+    const auto keypoints = dets[static_cast<size_t>(index)].getKeypoints();
+    if(keypoint < 0 || keypoint >= static_cast<int>(keypoints.size())) {
+        last_error = "dai_spatial_detections_get_keypoint: keypoint index out of range";
+        return false;
+    }
+    const auto& kp = keypoints[static_cast<size_t>(keypoint)];
+    if(x) *x = kp.imageCoordinates.x;
+    if(y) *y = kp.imageCoordinates.y;
+    if(confidence) *confidence = kp.confidence;
+    if(x_mm) *x_mm = kp.spatialCoordinates.x;
+    if(y_mm) *y_mm = kp.spatialCoordinates.y;
+    if(z_mm) *z_mm = kp.spatialCoordinates.z;
+    return true;
+}
+
+int64_t dai_spatial_detections_get_sequence_num(DaiSpatialDetections detections) {
+    if(!detections) {
+        last_error = "dai_spatial_detections_get_sequence_num: null detections";
+        return -1;
+    }
+    return (*static_cast<std::shared_ptr<dai::SpatialImgDetections>*>(detections))->getSequenceNum();
+}
+
+// ===== NeuralNetwork =====
+
+namespace {
+inline std::shared_ptr<dai::node::NeuralNetwork> as_nn(DaiNode network) {
+    return std::static_pointer_cast<dai::node::NeuralNetwork>(static_cast<dai::Node*>(network)->shared_from_this());
+}
+
+// Re-select the superblob variant compiled for `num_shaves` SHAVE cores; the
+// default (8) may not fit next to StereoDepth and other networks on RVC2.
+void apply_num_shaves(dai::node::NeuralNetwork& nn, int num_shaves) {
+    if(num_shaves <= 0) return;
+    auto archive = nn.getNNArchive();
+    if(!archive) throw std::runtime_error("no model loaded");
+    dai::NNArchive copy = archive->get();
+    nn.setNNArchive(copy, num_shaves);
+}
+
+// IEEE 754 half -> single precision.
+float half_to_float(std::uint16_t h) {
+    const std::uint32_t sign = static_cast<std::uint32_t>(h & 0x8000u) << 16;
+    std::uint32_t exponent = (h >> 10) & 0x1fu;
+    std::uint32_t mantissa = h & 0x3ffu;
+    std::uint32_t bits;
+    if(exponent == 0) {
+        if(mantissa == 0) {
+            bits = sign;
+        } else {
+            // Subnormal: normalize.
+            exponent = 127 - 15 + 1;
+            while(!(mantissa & 0x400u)) {
+                mantissa <<= 1;
+                exponent--;
+            }
+            bits = sign | (exponent << 23) | ((mantissa & 0x3ffu) << 13);
+        }
+    } else if(exponent == 0x1f) {
+        bits = sign | 0x7f800000u | (mantissa << 13);
+    } else {
+        bits = sign | ((exponent + 127 - 15) << 23) | (mantissa << 13);
+    }
+    float f;
+    std::memcpy(&f, &bits, 4);
+    return f;
+}
+
+inline std::shared_ptr<dai::NNData> as_nn_data(DaiNNData data) {
+    return *static_cast<std::shared_ptr<dai::NNData>*>(data);
+}
+}  // namespace
+
+bool dai_neural_network_build(DaiNode network,
+                              DaiCameraNode camera,
+                              const char* model,
+                              float fps,
+                              int num_shaves,
+                              int enable_undistortion) {
+    if(!network || !camera || !model) {
+        last_error = "dai_neural_network_build: null argument";
+        return false;
+    }
+    try {
+        auto nn = as_nn(network);
+        auto cam = std::static_pointer_cast<dai::node::Camera>(static_cast<dai::Node*>(camera)->shared_from_this());
+        dai::ImgFrameCapability cap;
+        if(fps > 0.f) cap.fps.value = fps;
+        if(enable_undistortion >= 0) cap.enableUndistortion = enable_undistortion != 0;
+        nn->build(cam, dai::node::NeuralNetwork::Model{std::string(model)}, cap);
+        apply_num_shaves(*nn, num_shaves);
+        return true;
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_neural_network_build failed: ") + e.what();
+        return false;
+    }
+}
+
+bool dai_neural_network_set_model(DaiNode network, const char* model, int num_shaves) {
+    if(!network || !model) {
+        last_error = "dai_neural_network_set_model: null argument";
+        return false;
+    }
+    try {
+        auto nn = as_nn(network);
+        dai::NNModelDescription desc;
+        desc.model = model;
+        if(desc.platform.empty()) {
+            auto device = nn->getDevice();
+            if(!device) throw std::runtime_error("pipeline has no device to resolve the model platform");
+            desc.platform = device->getPlatformAsString();
+        }
+        dai::NNArchive archive(dai::getModelFromZoo(desc, true));
+        nn->setNNArchive(archive);
+        apply_num_shaves(*nn, num_shaves);
+        return true;
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_neural_network_set_model failed: ") + e.what();
+        return false;
+    }
+}
+
+void dai_neural_network_set_num_inference_threads(DaiNode network, int num_threads) {
+    if(!network) {
+        last_error = "dai_neural_network_set_num_inference_threads: null network";
+        return;
+    }
+    try {
+        as_nn(network)->setNumInferenceThreads(num_threads);
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_neural_network_set_num_inference_threads failed: ") + e.what();
+    }
+}
+
+void dai_neural_network_set_num_pool_frames(DaiNode network, int num_frames) {
+    if(!network) {
+        last_error = "dai_neural_network_set_num_pool_frames: null network";
+        return;
+    }
+    try {
+        as_nn(network)->setNumPoolFrames(num_frames);
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_neural_network_set_num_pool_frames failed: ") + e.what();
+    }
+}
+
+bool dai_neural_network_get_input_size(DaiNode network, uint32_t* width, uint32_t* height) {
+    if(!network) {
+        last_error = "dai_neural_network_get_input_size: null network";
+        return false;
+    }
+    try {
+        auto archive = as_nn(network)->getNNArchive();
+        if(!archive) return false;
+        auto size = archive->get().getInputSize();
+        if(!size) return false;
+        if(width) *width = size->first;
+        if(height) *height = size->second;
+        return true;
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_neural_network_get_input_size failed: ") + e.what();
+        return false;
+    }
+}
+
+DaiNNData dai_queue_get_nn_data(DaiDataQueue queue, int timeout_ms) {
+    if(!queue) {
+        last_error = "dai_queue_get_nn_data: null queue";
+        return nullptr;
+    }
+    try {
+        auto ptr = static_cast<std::shared_ptr<dai::MessageQueue>*>(queue);
+        std::shared_ptr<dai::NNData> data;
+        if(timeout_ms < 0) {
+            data = (*ptr)->get<dai::NNData>();
+        } else {
+            bool timedOut = false;
+            data = (*ptr)->get<dai::NNData>(std::chrono::milliseconds(timeout_ms), timedOut);
+            if(timedOut) return nullptr;
+        }
+        if(!data) return nullptr;
+        return static_cast<DaiNNData>(new std::shared_ptr<dai::NNData>(data));
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_queue_get_nn_data failed: ") + e.what();
+        return nullptr;
+    }
+}
+
+void dai_nn_data_release(DaiNNData data) {
+    if(!data) return;
+    delete static_cast<std::shared_ptr<dai::NNData>*>(data);
+}
+
+int64_t dai_nn_data_get_sequence_num(DaiNNData data) {
+    if(!data) {
+        last_error = "dai_nn_data_get_sequence_num: null data";
+        return -1;
+    }
+    return as_nn_data(data)->getSequenceNum();
+}
+
+int dai_nn_data_layer_count(DaiNNData data) {
+    if(!data) {
+        last_error = "dai_nn_data_layer_count: null data";
+        return -1;
+    }
+    return static_cast<int>(as_nn_data(data)->getAllLayerNames().size());
+}
+
+bool dai_nn_data_layer_name(DaiNNData data, int index, char* buf, int buf_len) {
+    if(!data || !buf || buf_len <= 0) {
+        last_error = "dai_nn_data_layer_name: null/invalid argument";
+        return false;
+    }
+    const auto names = as_nn_data(data)->getAllLayerNames();
+    if(index < 0 || index >= static_cast<int>(names.size())) {
+        last_error = "dai_nn_data_layer_name: index out of range";
+        return false;
+    }
+    std::snprintf(buf, static_cast<size_t>(buf_len), "%s", names[static_cast<size_t>(index)].c_str());
+    return true;
+}
+
+int dai_nn_data_tensor_dims(DaiNNData data, const char* name, uint32_t* dims, int max_dims) {
+    if(!data || !name) {
+        last_error = "dai_nn_data_tensor_dims: null argument";
+        return -1;
+    }
+    auto info = as_nn_data(data)->getTensorInfo(name);
+    if(!info) {
+        last_error = std::string("dai_nn_data_tensor_dims: no layer named ") + name;
+        return -1;
+    }
+    for(int i = 0; i < max_dims && i < static_cast<int>(info->dims.size()); i++) {
+        dims[i] = static_cast<uint32_t>(info->dims[static_cast<size_t>(i)]);
+    }
+    return static_cast<int>(info->dims.size());
+}
+
+size_t dai_nn_data_tensor_f32(DaiNNData data, const char* name, float* out, size_t max_len) {
+    if(!data || !name) {
+        last_error = "dai_nn_data_tensor_f32: null argument";
+        return 0;
+    }
+    try {
+        // Read the raw buffer through the tensor's strides (the xtensor-based
+        // NNData::getTensor is not compiled into this build).
+        auto nn = as_nn_data(data);
+        auto info = nn->getTensorInfo(name);
+        if(!info) throw std::runtime_error(std::string("no layer named ") + name);
+        const auto& dims = info->dims;
+        size_t n = 1;
+        for(auto d : dims) n *= d;
+        if(!out || max_len == 0) return n;
+
+        const size_t elemSize = static_cast<size_t>(info->getDataTypeSize());
+        std::vector<size_t> strides(dims.size());
+        if(info->strides.size() == dims.size()) {
+            std::copy(info->strides.begin(), info->strides.end(), strides.begin());
+        } else {
+            size_t stride = elemSize;
+            for(size_t i = dims.size(); i-- > 0;) {
+                strides[i] = stride;
+                stride *= dims[i];
+            }
+        }
+        const auto bytes = nn->getData();
+        std::vector<size_t> index(dims.size(), 0);
+        const size_t count = std::min(n, max_len);
+        for(size_t k = 0; k < count; k++) {
+            size_t at = info->offset;
+            for(size_t i = 0; i < dims.size(); i++) at += index[i] * strides[i];
+            if(at + elemSize > bytes.size()) throw std::runtime_error("tensor exceeds NNData buffer");
+            const std::uint8_t* p = bytes.data() + at;
+            float v = 0.f;
+            switch(info->dataType) {
+                case dai::TensorInfo::DataType::FP16: {
+                    std::uint16_t h;
+                    std::memcpy(&h, p, 2);
+                    v = half_to_float(h);
+                    break;
+                }
+                case dai::TensorInfo::DataType::U8F:
+                    v = static_cast<float>(*p);
+                    break;
+                case dai::TensorInfo::DataType::I8:
+                    v = static_cast<float>(static_cast<std::int8_t>(*p));
+                    break;
+                case dai::TensorInfo::DataType::INT: {
+                    std::int32_t i32;
+                    std::memcpy(&i32, p, 4);
+                    v = static_cast<float>(i32);
+                    break;
+                }
+                case dai::TensorInfo::DataType::FP32:
+                    std::memcpy(&v, p, 4);
+                    break;
+                case dai::TensorInfo::DataType::FP64: {
+                    double d;
+                    std::memcpy(&d, p, 8);
+                    v = static_cast<float>(d);
+                    break;
+                }
+            }
+            if(info->quantization) v = (v - info->qpZp) * info->qpScale;
+            out[k] = v;
+            // Advance the row-major multi-index.
+            for(size_t i = dims.size(); i-- > 0;) {
+                if(++index[i] < dims[i]) break;
+                index[i] = 0;
+            }
+        }
+        return n;
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_nn_data_tensor_f32 failed: ") + e.what();
+        return 0;
+    }
+}
+
+DaiBuffer dai_img_detections_new_from_nn_data(DaiNNData source) {
+    if(!source) {
+        last_error = "dai_img_detections_new_from_nn_data: null source";
+        return nullptr;
+    }
+    try {
+        auto src = as_nn_data(source);
+        auto dets = std::make_shared<dai::ImgDetections>();
+        dets->setSequenceNum(src->getSequenceNum());
+        dets->setTimestamp(src->getTimestamp());
+        dets->setTimestampDevice(src->getTimestampDevice());
+        dets->transformation = src->transformation;
+        return static_cast<DaiBuffer>(new std::shared_ptr<dai::Buffer>(dets));
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_img_detections_new_from_nn_data failed: ") + e.what();
+        return nullptr;
+    }
+}
+
+bool dai_img_detections_add(DaiBuffer detections,
+                            uint32_t label,
+                            float confidence,
+                            float xmin,
+                            float ymin,
+                            float xmax,
+                            float ymax,
+                            const float* keypoints_xy,
+                            int num_keypoints) {
+    if(!detections || (num_keypoints > 0 && !keypoints_xy)) {
+        last_error = "dai_img_detections_add: null argument";
+        return false;
+    }
+    auto dets = std::dynamic_pointer_cast<dai::ImgDetections>(*static_cast<std::shared_ptr<dai::Buffer>*>(detections));
+    if(!dets) {
+        last_error = "dai_img_detections_add: buffer is not ImgDetections";
+        return false;
+    }
+    try {
+        dai::ImgDetection det;
+        det.label = label;
+        det.confidence = confidence;
+        det.setOuterBoundingBox(xmin, ymin, xmax, ymax);
+        if(num_keypoints > 0) {
+            std::vector<dai::Point2f> points;
+            points.reserve(static_cast<size_t>(num_keypoints));
+            for(int i = 0; i < num_keypoints; i++) {
+                points.emplace_back(keypoints_xy[2 * i], keypoints_xy[2 * i + 1]);
+            }
+            det.setKeypoints(points);
+        }
+        dets->detections.push_back(std::move(det));
+        return true;
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_img_detections_add failed: ") + e.what();
+        return false;
+    }
+}
+
+// ===== SpatialLocationCalculator =====
+
+namespace {
+inline std::shared_ptr<dai::node::SpatialLocationCalculator> as_slc(DaiNode calculator) {
+    return std::static_pointer_cast<dai::node::SpatialLocationCalculator>(static_cast<dai::Node*>(calculator)->shared_from_this());
+}
+}  // namespace
+
+void dai_spatial_location_calculator_set_depth_thresholds(DaiNode calculator, uint32_t lower_mm, uint32_t upper_mm) {
+    if(!calculator) {
+        last_error = "dai_spatial_location_calculator_set_depth_thresholds: null calculator";
+        return;
+    }
+    as_slc(calculator)->initialConfig->setDepthThresholds(lower_mm, upper_mm);
+}
+
+void dai_spatial_location_calculator_set_calculation_algorithm(DaiNode calculator, int algorithm) {
+    if(!calculator) {
+        last_error = "dai_spatial_location_calculator_set_calculation_algorithm: null calculator";
+        return;
+    }
+    as_slc(calculator)->initialConfig->setCalculationAlgorithm(static_cast<dai::SpatialLocationCalculatorAlgorithm>(algorithm));
+}
+
+void dai_spatial_location_calculator_set_bounding_box_scale_factor(DaiNode calculator, float factor) {
+    if(!calculator) {
+        last_error = "dai_spatial_location_calculator_set_bounding_box_scale_factor: null calculator";
+        return;
+    }
+    as_slc(calculator)->initialConfig->setBoundingBoxScaleFactor(factor);
+}
+
+void dai_spatial_location_calculator_set_keypoint_radius(DaiNode calculator, int radius) {
+    if(!calculator) {
+        last_error = "dai_spatial_location_calculator_set_keypoint_radius: null calculator";
+        return;
+    }
+    as_slc(calculator)->initialConfig->setKeypointRadius(radius);
+}
+
+void dai_spatial_location_calculator_set_calculate_spatial_keypoints(DaiNode calculator, bool enable) {
+    if(!calculator) {
+        last_error = "dai_spatial_location_calculator_set_calculate_spatial_keypoints: null calculator";
+        return;
+    }
+    as_slc(calculator)->initialConfig->setCalculateSpatialKeypoints(enable);
+}
+
+// ===== ImgFrame (host side) =====
+
+int64_t dai_frame_get_sequence_num(DaiImgFrame frame) {
+    if(!frame) {
+        last_error = "dai_frame_get_sequence_num: null frame";
+        return -1;
+    }
+    return (*static_cast<std::shared_ptr<dai::ImgFrame>*>(frame))->getSequenceNum();
+}
+
+DaiImgFrame dai_img_frame_new(uint32_t width, uint32_t height, int type, const void* data, size_t len) {
+    if(!data && len > 0) {
+        last_error = "dai_img_frame_new: null data";
+        return nullptr;
+    }
+    try {
+        auto frame = std::make_shared<dai::ImgFrame>();
+        const auto* bytes = static_cast<const std::uint8_t*>(data);
+        frame->setData(std::vector<std::uint8_t>(bytes, bytes + len));
+        frame->setSize(width, height);
+        frame->setType(static_cast<dai::ImgFrame::Type>(type));
+        frame->setTimestamp(std::chrono::steady_clock::now());
+        return static_cast<DaiImgFrame>(new std::shared_ptr<dai::ImgFrame>(frame));
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_img_frame_new failed: ") + e.what();
+        return nullptr;
+    }
+}
+
+void dai_input_queue_send_img_frame(DaiInputQueue queue, DaiImgFrame frame) {
+    if(!queue || !frame) {
+        last_error = "dai_input_queue_send_img_frame: null queue/frame";
+        return;
+    }
+    try {
+        auto q = static_cast<std::shared_ptr<dai::InputQueue>*>(queue);
+        (*q)->send(*static_cast<std::shared_ptr<dai::ImgFrame>*>(frame));
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_input_queue_send_img_frame failed: ") + e.what();
+    }
+}
+
+// ===== Device temperature / CameraControl =====
+
+bool dai_device_get_chip_temperature(DaiDevice device, float* css, float* mss, float* upa, float* dss, float* average) {
+    if(!device) {
+        last_error = "dai_device_get_chip_temperature: null device";
+        return false;
+    }
+    try {
+        auto dev = static_cast<std::shared_ptr<dai::Device>*>(device);
+        if(!dev->get() || !(*dev)) {
+            last_error = "dai_device_get_chip_temperature: invalid device";
+            return false;
+        }
+        const auto t = (*dev)->getChipTemperature();
+        if(css) *css = t.css;
+        if(mss) *mss = t.mss;
+        if(upa) *upa = t.upa;
+        if(dss) *dss = t.dss;
+        if(average) *average = t.average;
+        return true;
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_device_get_chip_temperature failed: ") + e.what();
+        return false;
+    }
+}
+
+DaiBuffer dai_camera_control_new() {
+    try {
+        return static_cast<DaiBuffer>(new std::shared_ptr<dai::Buffer>(std::make_shared<dai::CameraControl>()));
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_camera_control_new failed: ") + e.what();
+        return nullptr;
+    }
+}
+
+void dai_camera_control_set_streaming(DaiBuffer control, bool streaming) {
+    if(!control) {
+        last_error = "dai_camera_control_set_streaming: null control";
+        return;
+    }
+    auto ctrl = std::dynamic_pointer_cast<dai::CameraControl>(*static_cast<std::shared_ptr<dai::Buffer>*>(control));
+    if(!ctrl) {
+        last_error = "dai_camera_control_set_streaming: buffer is not CameraControl";
+        return;
+    }
+    if(streaming) {
+        ctrl->setStartStreaming();
+    } else {
+        ctrl->setStopStreaming();
+    }
+}
+
+// ===== Input queue settings =====
+
+void dai_input_set_blocking(DaiInput input, bool blocking) {
+    if(!input) {
+        last_error = "dai_input_set_blocking: null input";
+        return;
+    }
+    try {
+        static_cast<dai::Node::Input*>(input)->setBlocking(blocking);
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_input_set_blocking failed: ") + e.what();
+    }
+}
+
+void dai_input_set_max_size(DaiInput input, unsigned int max_size) {
+    if(!input) {
+        last_error = "dai_input_set_max_size: null input";
+        return;
+    }
+    try {
+        static_cast<dai::Node::Input*>(input)->setMaxSize(max_size);
+    } catch(const std::exception& e) {
+        last_error = std::string("dai_input_set_max_size failed: ") + e.what();
+    }
 }
 
 } // namespace dai

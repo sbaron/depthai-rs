@@ -528,6 +528,106 @@ API bool dai_spatial_detections_get(DaiSpatialDetections detections,
                                     float* y_mm,
                                     float* z_mm);
 API bool dai_spatial_detections_label_name(DaiSpatialDetections detections, int index, char* buf, int buf_len);
+// Keypoints of one detection (e.g. face landmarks), when the detections came
+// from a model with keypoints. Image coordinates are normalized [0,1];
+// spatial coordinates are millimeters (0 when unknown). Count is -1 on error.
+API int dai_spatial_detections_keypoint_count(DaiSpatialDetections detections, int index);
+API bool dai_spatial_detections_get_keypoint(DaiSpatialDetections detections,
+                                             int index,
+                                             int keypoint,
+                                             float* x,
+                                             float* y,
+                                             float* confidence,
+                                             float* x_mm,
+                                             float* y_mm,
+                                             float* z_mm);
+API int64_t dai_spatial_detections_get_sequence_num(DaiSpatialDetections detections);
+
+// NeuralNetwork (generic inference; outputs raw NNData tensors).
+// NNData handle: `std::shared_ptr<dai::NNData>*`
+typedef void* DaiNNData;
+
+// Feeds `camera` into the network and loads `model` (Luxonis HubAI model
+// slug, downloaded from the model zoo on first use); the camera output is
+// requested at the model's input size and type. Pass fps <= 0 to leave it
+// unspecified, num_shaves <= 0 to keep the superblob default.
+// enable_undistortion: -1 = camera default, 0 = off, 1 = on (needed to align
+// the NN frame with undistorted depth, e.g. for SpatialLocationCalculator).
+API bool dai_neural_network_build(DaiNode network,
+                                  DaiCameraNode camera,
+                                  const char* model,
+                                  float fps,
+                                  int num_shaves,
+                                  int enable_undistortion);
+// Loads `model` without linking an input, for networks fed from another node
+// or from the host through the "in" input.
+API bool dai_neural_network_set_model(DaiNode network, const char* model, int num_shaves);
+API void dai_neural_network_set_num_inference_threads(DaiNode network, int num_threads);
+API void dai_neural_network_set_num_pool_frames(DaiNode network, int num_frames);
+// Input size of the loaded model archive; false when unknown.
+API bool dai_neural_network_get_input_size(DaiNode network, uint32_t* width, uint32_t* height);
+
+// Pass timeout_ms < 0 to block indefinitely; returns null on timeout.
+API DaiNNData dai_queue_get_nn_data(DaiDataQueue queue, int timeout_ms);
+API void dai_nn_data_release(DaiNNData data);
+API int64_t dai_nn_data_get_sequence_num(DaiNNData data);
+API int dai_nn_data_layer_count(DaiNNData data);
+API bool dai_nn_data_layer_name(DaiNNData data, int index, char* buf, int buf_len);
+// Writes up to max_dims dimensions of tensor `name`; returns the number of
+// dimensions, or -1 when there is no such layer.
+API int dai_nn_data_tensor_dims(DaiNNData data, const char* name, uint32_t* dims, int max_dims);
+// Copies tensor `name` (dequantized, row-major) as f32 into `out`; returns
+// the element count (which may exceed max_len: pass null/0 to query it), or
+// 0 on error.
+API size_t dai_nn_data_tensor_f32(DaiNNData data, const char* name, float* out, size_t max_len);
+
+// ImgDetections built on the host (e.g. from a host-side parser), held as a
+// DaiBuffer so it can be sent with dai_input_queue_send_buffer. Sequence
+// number, timestamps and image transformation are copied from `source`, so
+// the device can map the detections onto other frames (e.g. depth).
+API DaiBuffer dai_img_detections_new_from_nn_data(DaiNNData source);
+// Bounding box and keypoints are normalized [0,1]; keypoints_xy holds
+// num_keypoints (x, y) pairs and may be null when num_keypoints is 0.
+API bool dai_img_detections_add(DaiBuffer detections,
+                                uint32_t label,
+                                float confidence,
+                                float xmin,
+                                float ymin,
+                                float xmax,
+                                float ymax,
+                                const float* keypoints_xy,
+                                int num_keypoints);
+
+// SpatialLocationCalculator initial configuration.
+// algorithm mirrors dai::SpatialLocationCalculatorAlgorithm:
+// AVERAGE=0, MIN=1, MAX=2, MODE=3, MEDIAN=4.
+API void dai_spatial_location_calculator_set_depth_thresholds(DaiNode calculator, uint32_t lower_mm, uint32_t upper_mm);
+API void dai_spatial_location_calculator_set_calculation_algorithm(DaiNode calculator, int algorithm);
+API void dai_spatial_location_calculator_set_bounding_box_scale_factor(DaiNode calculator, float factor);
+API void dai_spatial_location_calculator_set_keypoint_radius(DaiNode calculator, int radius);
+API void dai_spatial_location_calculator_set_calculate_spatial_keypoints(DaiNode calculator, bool enable);
+
+// ImgFrame metadata and host-created frames.
+API int64_t dai_frame_get_sequence_num(DaiImgFrame frame);
+// New frame of the given ImageFrameType holding a copy of `data`.
+API DaiImgFrame dai_img_frame_new(uint32_t width, uint32_t height, int type, const void* data, size_t len);
+API void dai_input_queue_send_img_frame(DaiInputQueue queue, DaiImgFrame frame);
+
+// Input queue behaviour on the device side (before the pipeline starts):
+// a non-blocking input drops the oldest message when full instead of making
+// the sender wait.
+API void dai_input_set_blocking(DaiInput input, bool blocking);
+API void dai_input_set_max_size(DaiInput input, unsigned int max_size);
+
+// Device chip temperatures in degrees Celsius: CPU subsystem (css), media
+// subsystem (mss), shave array (upa), DRAM subsystem (dss) and their average.
+API bool dai_device_get_chip_temperature(DaiDevice device, float* css, float* mss, float* upa, float* dss, float* average);
+
+// CameraControl message (held as a DaiBuffer, sent to a camera's
+// "inputControl" with dai_input_queue_send_buffer).
+API DaiBuffer dai_camera_control_new();
+// Start or stop the sensor's streaming (stopped sensors save power).
+API void dai_camera_control_set_streaming(DaiBuffer control, bool streaming);
 
 // Error handling
 API const char* dai_get_last_error();

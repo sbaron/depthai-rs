@@ -6,7 +6,7 @@ use depthai_sys::{depthai, DaiOutput, DaiInput};
 
 use crate::camera::{ImageFrame, OutputQueue};
 use crate::encoded_frame::EncodedFrameQueue;
-use crate::error::{clear_error_flag, last_error, Result};
+use crate::error::{clear_error_flag, last_error, take_error_if_any, Result};
 use crate::host_node::Buffer;
 use crate::pipeline::{Node, PipelineInner};
 use crate::queue::{InputQueue, MessageQueue};
@@ -182,6 +182,21 @@ impl Input {
     /// Create a host→device input queue (DepthAI-Core `InputQueue`).
     ///
     /// This is the canonical way to send messages into a pipeline input from the host.
+    pub fn set_blocking(&self, blocking: bool) -> Result<()> {
+        clear_error_flag();
+        unsafe { depthai::dai_input_set_blocking(self.handle, blocking) };
+        take_error_if_any("failed to set input blocking").map_or(Ok(()), Err)
+    }
+
+    /// Device-side queue length of this input. Together with
+    /// `set_blocking(false)`, `set_max_size(1)` makes the node always take the
+    /// latest message, bounding latency when producers outpace it.
+    pub fn set_max_size(&self, max_size: u32) -> Result<()> {
+        clear_error_flag();
+        unsafe { depthai::dai_input_set_max_size(self.handle, c_uint(max_size)) };
+        take_error_if_any("failed to set input queue size").map_or(Ok(()), Err)
+    }
+
     pub fn create_input_queue(&self, max_size: u32, blocking: bool) -> Result<InputQueue> {
         clear_error_flag();
         let handle = unsafe { depthai::dai_input_create_input_queue(self.handle, c_uint(max_size), blocking) };

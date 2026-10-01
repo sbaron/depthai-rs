@@ -334,6 +334,46 @@ include_cpp! {
     generate!("dai::dai_spatial_detections_count")
     generate!("dai::dai_spatial_detections_get")
     generate!("dai::dai_spatial_detections_label_name")
+    generate!("dai::dai_spatial_detections_keypoint_count")
+    generate!("dai::dai_spatial_detections_get_keypoint")
+    generate!("dai::dai_spatial_detections_get_sequence_num")
+
+    // NeuralNetwork + NNData
+    generate!("dai::dai_neural_network_build")
+    generate!("dai::dai_neural_network_set_model")
+    generate!("dai::dai_neural_network_set_num_inference_threads")
+    generate!("dai::dai_neural_network_set_num_pool_frames")
+    generate!("dai::dai_neural_network_get_input_size")
+    generate!("dai::dai_queue_get_nn_data")
+    generate!("dai::dai_nn_data_release")
+    generate!("dai::dai_nn_data_get_sequence_num")
+    generate!("dai::dai_nn_data_layer_count")
+    generate!("dai::dai_nn_data_layer_name")
+    generate!("dai::dai_nn_data_tensor_dims")
+    generate!("dai::dai_nn_data_tensor_f32")
+
+    // Host-built ImgDetections
+    generate!("dai::dai_img_detections_new_from_nn_data")
+    generate!("dai::dai_img_detections_add")
+
+    // SpatialLocationCalculator
+    generate!("dai::dai_spatial_location_calculator_set_depth_thresholds")
+    generate!("dai::dai_spatial_location_calculator_set_calculation_algorithm")
+    generate!("dai::dai_spatial_location_calculator_set_bounding_box_scale_factor")
+    generate!("dai::dai_spatial_location_calculator_set_keypoint_radius")
+    generate!("dai::dai_spatial_location_calculator_set_calculate_spatial_keypoints")
+
+    // ImgFrame (host side)
+    generate!("dai::dai_frame_get_sequence_num")
+    generate!("dai::dai_img_frame_new")
+    generate!("dai::dai_input_queue_send_img_frame")
+
+    // Device temperature, CameraControl
+    generate!("dai::dai_input_set_blocking")
+    generate!("dai::dai_input_set_max_size")
+    generate!("dai::dai_device_get_chip_temperature")
+    generate!("dai::dai_camera_control_new")
+    generate!("dai::dai_camera_control_set_streaming")
 
     // Utilities
     generate!("dai::dai_camera_socket_name")
@@ -374,6 +414,7 @@ pub type DaiPointCloud = *mut autocxx::c_void;
 pub type DaiRGBDData = *mut autocxx::c_void;
 pub type DaiMessageGroup = *mut autocxx::c_void;
 pub type DaiSpatialDetections = *mut autocxx::c_void;
+pub type DaiNNData = *mut autocxx::c_void;
 pub type DaiBuffer = *mut autocxx::c_void;
 pub type DaiInputQueue = *mut autocxx::c_void;
 

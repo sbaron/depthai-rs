@@ -661,6 +661,17 @@ impl InputQueue {
         }
     }
 
+    /// Send an image frame (e.g. one built with [`crate::camera::ImageFrame::new`]).
+    pub fn send_frame(&self, frame: &crate::camera::ImageFrame) -> Result<()> {
+        clear_error_flag();
+        unsafe { depthai::dai_input_queue_send_img_frame(self.handle, frame.handle()) };
+        if let Some(err) = take_error_if_any("failed to send frame to input queue") {
+            Err(err)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Send a `Buffer` (or any `Buffer` subtype, such as `GateControl`) through this queue.
     ///
     /// This is the canonical way to send control messages like `GateControl` to nodes.

@@ -503,17 +503,21 @@ pub mod error;
 pub mod gate;
 pub mod host_node;
 pub mod encoded_frame;
+pub mod face;
 pub mod image_align;
 pub mod image_manip;
 pub mod threaded_host_node;
 #[cfg(feature = "rerun")]
 pub mod rerun_host_node;
+pub mod neural_network;
 pub mod output;
+pub mod parsers;
 pub mod pipeline;
 pub mod pointcloud;
 pub mod queue;
 pub mod rgbd;
 pub mod spatial_detection_network;
+pub mod spatial_location_calculator;
 pub mod stereo_depth;
 pub mod video_encoder;
 
@@ -521,7 +525,7 @@ pub use error::{DepthaiError, Result};
 pub use pipeline::{CreateInPipeline, CreateInPipelineWith, DeviceNode, DeviceNodeWithParams};
 
 pub use device::Device;
-pub use device::DevicePlatform;
+pub use device::{ChipTemperature, DevicePlatform};
 pub use pipeline::Pipeline;
 
 pub use output::{Output, Input};
@@ -538,7 +542,9 @@ pub use image_manip::{
 pub use image_align::ImageAlignNode;
 pub use encoded_frame::{EncodedFrame, EncodedFrameProfile, EncodedFrameQueue, EncodedFrameType};
 pub use rgbd::{DepthUnit, RgbdData, RgbdNode};
-pub use spatial_detection_network::{SpatialDetection, SpatialDetectionNetworkNode, SpatialDetections};
+pub use spatial_detection_network::{SpatialDetection, SpatialDetectionNetworkNode, SpatialDetections, SpatialKeypoint};
+pub use neural_network::{NNData, NeuralNetworkBuildConfig, NeuralNetworkNode, Tensor};
+pub use spatial_location_calculator::{ImgDetections, SpatialLocationCalculatorAlgorithm, SpatialLocationCalculatorNode};
 pub use stereo_depth::{PresetMode as StereoPresetMode, StereoDepthNode};
 pub use video_encoder::{VideoEncoderNode, VideoEncoderProfile, VideoEncoderRateControlMode};
 pub use host_node::{HostNode, HostNodeImpl, MessageGroup, Buffer};
